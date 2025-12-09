@@ -1,12 +1,11 @@
 import 'dart:typed_data';
 import 'dart:io';
-import 'dart:ui' as ui; // Needed for loading the texture
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-// Make sure this path matches your project structure
 import 'package:face_task_5/face_painter.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -49,9 +48,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   late CameraDescription _cameraDescription;
   bool _isCameraInitialized = false;
 
+  // KEY SETTING: enableLandmarks must be true for the Nose Anchor to work
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
-      enableContours: true, // We MUST enable contours for the mesh to work
+      enableContours: true,
       enableLandmarks: true,
       minFaceSize: 0.15,
       performanceMode: FaceDetectorMode.accurate,
@@ -61,11 +61,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   List<Face> _faces = [];
   bool _isDetecting = false;
 
-  // --- MORPHING VARIABLES ---
   File? _staticImageFile;
   List<Face> _staticImageFaces = [];
-  ui.Image? _staticImageTexture; // The GPU-ready texture
-  // --------------------------
+  ui.Image? _staticImageTexture;
 
   @override
   void initState() {
@@ -141,7 +139,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     await _initializeCamera(initialCamera: newCamera);
   }
 
-  // --- NEW: Load the image file into a GPU Texture ---
   Future<void> _loadStaticImageTexture(File file) async {
     final data = await file.readAsBytes();
     final image = await decodeImageFromList(data);
@@ -158,13 +155,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       setState(() {
         _staticImageFile = File(image.path);
         _staticImageFaces = [];
-        _staticImageTexture = null; // Clear old texture
+        _staticImageTexture = null;
       });
 
-      // 1. Load texture for painting
       await _loadStaticImageTexture(File(image.path));
-
-      // 2. Detect face landmarks on the static image
       await _processStaticImage(InputImage.fromFilePath(image.path));
     }
   }
@@ -173,7 +167,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     try {
       final faces = await _faceDetector.processImage(inputImage);
       if (faces.isNotEmpty) {
-        print("Static Image: Found ${faces.length} faces");
         setState(() {
           _staticImageFaces = faces;
         });
@@ -256,7 +249,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Real-Time Face Detection'),
+        title: const Text('Real-Time Face Morph'),
         actions: [
           IconButton(
             icon: const Icon(Icons.flip_camera_ios),
@@ -282,7 +275,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     painter: FacePainter(
                       faces: _faces,
                       absoluteImageSize: imageSize,
-                      // --- PASS THE NEW DATA ---
                       faceTexture: _staticImageTexture,
                       staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
                     ),
@@ -297,7 +289,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                   ),
                 ),
 
-              // --- PREVIEW OF PICKED IMAGE ---
               if (_staticImageFile != null)
                 Positioned(
                   top: 20,

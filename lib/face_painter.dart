@@ -1,13 +1,11 @@
-import 'dart:math' as math; // Needed for the 'Point' class
-import 'dart:ui' as ui;     // Needed for Image, Vertices, and ImageShader
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 class FacePainter extends CustomPainter {
   final List<Face> faces;
   final Size absoluteImageSize;
-
-  // New variables for the Face Swap
   final ui.Image? faceTexture;     // The loaded static image
   final Face? staticFace;          // The landmarks of the static face
 
@@ -32,7 +30,7 @@ class FacePainter extends CustomPainter {
       ..color = Colors.red;
 
     for (final liveFace in faces) {
-      // --- MODE 1: Standard Detection (No Face Swap yet) ---
+      // --- MODE 1: Standard Detection (Red Box) ---
       if (faceTexture == null || staticFace == null) {
         canvas.drawRect(
           Rect.fromLTRB(
@@ -46,68 +44,72 @@ class FacePainter extends CustomPainter {
         continue;
       }
 
-      // --- MODE 2: Face Swap (Morphing) ---
-      // 1. Get contours (The outline of the face)
+      // --- MODE 2: Face Swap (Anchored Mesh) ---
+
+      // 1. Get the Key Contours
+      // We grab the face oval AND the nose bridge to find a stable center
       final liveContour = liveFace.contours[FaceContourType.face];
       final staticContour = staticFace!.contours[FaceContourType.face];
 
-      // We need both faces to have the outline detected
-      if (liveContour == null || staticContour == null) continue;
+      // We use the Nose Base as the "Anchor" so the face doesn't float
+      final liveNose = liveFace.landmarks[FaceLandmarkType.noseBase];
+      final staticNose = staticFace!.landmarks[FaceLandmarkType.noseBase];
+
+      if (liveContour == null || staticContour == null || liveNose == null || staticNose == null) continue;
 
       final livePoints = liveContour.points;
       final staticPoints = staticContour.points;
 
-      // Safety check: point counts must match roughly
-      final int pointCount = livePoints.length < staticPoints.length
-          ? livePoints.length
-          : staticPoints.length;
+      // 2. Prepare Data Lists
+      List<Offset> positions = [];     // Screen coordinates (Live)
+      List<Offset> textureCoords = []; // Texture coordinates (Static)
+      List<int> indices = [];          // Triangle connections
 
-      // 2. Build the Mesh (Vertices)
-      // We use a "Triangle Fan" from the center of the face
+      // 3. Add the ANCHOR Point (The Nose) at Index 0
+      // This pins the texture to your nose, preventing sliding
+      positions.add(Offset(
+        liveNose.position.x.toDouble() * scaleX,
+        liveNose.position.y.toDouble() * scaleY,
+      ));
 
-      // Calculate Centers using the helper function
-      Offset liveCenter = _getCentroid(livePoints);
-      Offset staticCenter = _getCentroid(staticPoints);
+      textureCoords.add(Offset(
+        staticNose.position.x.toDouble(),
+        staticNose.position.y.toDouble(),
+      ));
 
-      // Adjust live center to screen coordinates
-      liveCenter = Offset(liveCenter.dx * scaleX, liveCenter.dy * scaleY);
+      // 4. Add the Face Contour Points
+      // We use the smaller count to avoid crashes if one face is detected differently
+      final int pointCount = math.min(livePoints.length, staticPoints.length);
 
-      List<Offset> positions = [];     // Where to draw on screen (Live)
-      List<Offset> textureCoords = []; // Where to pick color from (Static)
-      List<int> indices = [];          // How to connect dots to make triangles
-
-      // Add the center point first (Index 0)
-      positions.add(liveCenter);
-      textureCoords.add(staticCenter);
-
-      // Add the contour points
       for (int i = 0; i < pointCount; i++) {
-        // Map Live Point to Screen
+        // Live Point (Scaled to screen)
         positions.add(Offset(
           livePoints[i].x.toDouble() * scaleX,
           livePoints[i].y.toDouble() * scaleY,
         ));
 
-        // Map Static Point to Texture
-        // Note: Texture coordinates are raw pixels on the original image, no scaling needed
+        // Static Point (Raw pixels)
         textureCoords.add(Offset(
           staticPoints[i].x.toDouble(),
           staticPoints[i].y.toDouble(),
         ));
       }
 
-      // Create Triangles (Connect Center -> Point i -> Point i+1)
+      // 5. Build the Mesh (Triangle Fan)
+      // Connect: Nose(0) -> ContourPoint(i) -> ContourPoint(i+1)
+      // This stretches the skin from your nose to the edge of your face
       for (int i = 1; i < pointCount; i++) {
-        indices.add(0);     // Center
-        indices.add(i);     // Current Point
-        indices.add(i + 1); // Next Point
+        indices.add(0);     // Nose Anchor
+        indices.add(i);     // Current Edge Point
+        indices.add(i + 1); // Next Edge Point
       }
-      // Close the loop (Last point -> First point)
+
+      // Close the loop (Connect last point back to first point)
       indices.add(0);
       indices.add(pointCount);
       indices.add(1);
 
-      // 3. Draw the Warped Mesh using dart:ui Vertices
+      // 6. Draw
       final vertices = ui.Vertices(
         ui.VertexMode.triangles,
         positions,
@@ -125,17 +127,6 @@ class FacePainter extends CustomPainter {
 
       canvas.drawVertices(vertices, BlendMode.srcOver, meshPaint);
     }
-  }
-
-  // Helper to find the center of a list of points
-  Offset _getCentroid(List<math.Point<int>> points) {
-    double sumX = 0;
-    double sumY = 0;
-    for (var p in points) {
-      sumX += p.x;
-      sumY += p.y;
-    }
-    return Offset(sumX / points.length, sumY / points.length);
   }
 
   @override
