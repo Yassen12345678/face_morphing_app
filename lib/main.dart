@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:face_task_5/face_painter.dart';
 import 'package:image_picker/image_picker.dart';
+import 'animal_data.dart'; // Ensure this file exists as created previously
 
 List<CameraDescription> cameras = [];
 
@@ -64,6 +65,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   File? _staticImageFile;
   List<Face> _staticImageFaces = [];
   ui.Image? _staticImageTexture;
+  AnimalData? _selectedAnimal; // Added: Track selected animal
   double _morphValue = 0.5;
   // ----------------------
 
@@ -135,6 +137,20 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     await _initializeCamera(initialCamera: newCamera);
   }
 
+  // Helper to load animal assets
+  Future<void> _loadAnimalAsset(AnimalData animal) async {
+    final ByteData data = await rootBundle.load(animal.assetPath);
+    final Uint8List bytes = data.buffer.asUint8List();
+    final image = await decodeImageFromList(bytes);
+
+    setState(() {
+      _selectedAnimal = animal;
+      _staticImageTexture = image;
+      _staticImageFaces = []; // Clear human faces
+      _staticImageFile = null; // Clear picked file
+    });
+  }
+
   Future<void> _loadStaticImageTexture(File file) async {
     final data = await file.readAsBytes();
     final image = await decodeImageFromList(data);
@@ -149,6 +165,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     if (image != null) {
       setState(() {
         _staticImageFile = File(image.path);
+        _selectedAnimal = null; // Clear animal selection
         _staticImageFaces = [];
         _staticImageTexture = null;
       });
@@ -230,7 +247,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         title: const Text('Face Morph'),
         actions: [
           IconButton(icon: const Icon(Icons.flip_camera_ios), onPressed: _toggleCamera),
-          // Picker in Top Right
           IconButton(
               icon: const Icon(Icons.add_photo_alternate),
               onPressed: _pickImage
@@ -240,57 +256,70 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       body: Column(
         children: [
           Expanded(
-            child: Center(
-              child: AspectRatio(
-                aspectRatio: cameraAspectRatio,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: <Widget>[
-                    CameraPreview(_controller!),
-                    if (imageSize.width != 0)
-                      isFrontCamera
-                          ? Transform.scale(
-                        scaleX: -1,
-                        scaleY: 1,
-                        alignment: Alignment.center,
-                        child: CustomPaint(
-                          painter: FacePainter(
-                            faces: _faces,
-                            absoluteImageSize: imageSize,
-                            faceTexture: _staticImageTexture,
-                            staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
-                            morphOpacity: _morphValue,
-                          ),
-                        ),
-                      )
-                          : CustomPaint(
-                        painter: FacePainter(
-                          faces: _faces,
-                          absoluteImageSize: imageSize,
-                          faceTexture: _staticImageTexture,
-                          staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
-                          morphOpacity: _morphValue,
-                        ),
-                      ),
+            child: ClipRect( // Clips the "zoomed in" overflow
+              child: Transform.scale(
+                // CALCULATE SCALE: Zoom to fill screen (Cover Mode)
+                scale: _controller != null && _controller!.value.isInitialized
+                    ? 1 / (_controller!.value.aspectRatio * MediaQuery.of(context).size.aspectRatio)
+                    : 1.0,
+                alignment: Alignment.center,
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio: _controller!.value.aspectRatio,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: <Widget>[
+                        CameraPreview(_controller!),
 
-                    // Small Preview
-                    if (_staticImageFile != null)
-                      Positioned(
-                        top: 10,
-                        right: 10,
-                        child: Container(
-                          width: 80,
-                          height: 100,
-                          decoration: BoxDecoration(
-                              border: Border.all(color: Colors.white, width: 2),
-                              image: DecorationImage(
-                                  image: FileImage(_staticImageFile!),
-                                  fit: BoxFit.cover
-                              )
+                        // Face Mesh / Morph Layer
+                        if (imageSize.width != 0)
+                          isFrontCamera
+                              ? Transform.scale(
+                            scaleX: -1,
+                            scaleY: 1,
+                            alignment: Alignment.center,
+                            child: CustomPaint(
+                              painter: FacePainter(
+                                faces: _faces,
+                                absoluteImageSize: imageSize,
+                                faceTexture: _staticImageTexture,
+                                staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
+                                manualAnimal: _selectedAnimal,
+                                morphOpacity: _morphValue,
+                              ),
+                            ),
+                          )
+                              : CustomPaint(
+                            painter: FacePainter(
+                              faces: _faces,
+                              absoluteImageSize: imageSize,
+                              faceTexture: _staticImageTexture,
+                              staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
+                              manualAnimal: _selectedAnimal,
+                              morphOpacity: _morphValue,
+                            ),
                           ),
-                        ),
-                      ),
-                  ],
+
+                        // Small Preview (Target Face)
+                        if (_staticImageFile != null)
+                          Positioned(
+                            top: 10,
+                            right: 10,
+                            child: Container(
+                              width: 80,
+                              height: 100,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.white, width: 2),
+                                image: DecorationImage(
+                                  image: FileImage(_staticImageFile!),
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -299,28 +328,61 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
           // --- CONTROLS SECTION (Bottom) ---
           Container(
             color: Colors.white,
-            padding: const EdgeInsets.fromLTRB(20, 10, 20, 30), // Extra bottom padding
-            child: Row(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 30),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                const Text("Alpha: 0%", style: TextStyle(fontWeight: FontWeight.bold)),
-                Expanded(
-                  child: Slider(
-                    value: _morphValue,
-                    min: 0.0,
-                    max: 1.0,
-                    onChanged: (value) {
-                      setState(() {
-                        _morphValue = value;
-                      });
-                    },
+                // Animal Selector
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: animalAssets.map((animal) { // Make sure animalAssets is defined in your file
+                      return GestureDetector(
+                        onTap: () => _loadAnimalAsset(animal),
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 5),
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                                color: _selectedAnimal == animal ? Colors.deepPurple : Colors.transparent,
+                                width: 3
+                            ),
+                            shape: BoxShape.circle,
+                          ),
+                          child: CircleAvatar(
+                            // If this is empty, check pubspec.yaml and RESTART app
+                            backgroundImage: AssetImage(animal.assetPath),
+                            radius: 25,
+                            backgroundColor: Colors.grey[300], // Fallback color if image fails
+                          ),
+                        ),
+                      );
+                    }).toList(),
                   ),
                 ),
-                const Text("100%", style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Text("Alpha: 0%", style: TextStyle(fontWeight: FontWeight.bold)),
+                    Expanded(
+                      child: Slider(
+                        value: _morphValue,
+                        min: 0.0,
+                        max: 1.0,
+                        onChanged: (value) {
+                          setState(() {
+                            _morphValue = value;
+                          });
+                        },
+                      ),
+                    ),
+                    const Text("100%", style: TextStyle(fontWeight: FontWeight.bold)),
+                  ],
+                ),
               ],
             ),
           ),
         ],
-      ),
-    );
+      ),    );
   }
 }
