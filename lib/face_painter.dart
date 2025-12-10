@@ -6,14 +6,16 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 class FacePainter extends CustomPainter {
   final List<Face> faces;
   final Size absoluteImageSize;
-  final ui.Image? faceTexture;     // The loaded static image
-  final Face? staticFace;          // The landmarks of the static face
+  final ui.Image? faceTexture;
+  final Face? staticFace;
+  final double morphOpacity;
 
   FacePainter({
     required this.faces,
     required this.absoluteImageSize,
     this.faceTexture,
     this.staticFace,
+    required this.morphOpacity,
   });
 
   @override
@@ -24,14 +26,15 @@ class FacePainter extends CustomPainter {
     final double scaleX = size.width / absoluteImageSize.width;
     final double scaleY = size.height / absoluteImageSize.height;
 
-    final Paint paint = Paint()
+    // Optional: Draw bounding box for debugging (currently hidden)
+    final Paint debugPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0
-      ..color = Colors.red;
+      ..color = Colors.red.withOpacity(0.3);
 
     for (final liveFace in faces) {
-      // --- MODE 1: Standard Detection (Red Box) ---
-      if (faceTexture == null || staticFace == null) {
+      // --- MODE 1: Standard (No Morph) ---
+      if (faceTexture == null || staticFace == null || morphOpacity == 0.0) {
         canvas.drawRect(
           Rect.fromLTRB(
             liveFace.boundingBox.left * scaleX,
@@ -39,19 +42,18 @@ class FacePainter extends CustomPainter {
             liveFace.boundingBox.right * scaleX,
             liveFace.boundingBox.bottom * scaleY,
           ),
-          paint,
+          debugPaint,
         );
         continue;
       }
 
-      // --- MODE 2: Face Swap (Anchored Mesh) ---
+      // --- MODE 2: Stable Morph (Nose Anchor Only) ---
 
-      // 1. Get the Key Contours
-      // We grab the face oval AND the nose bridge to find a stable center
+      // 1. Get Face Contour (The Outline)
       final liveContour = liveFace.contours[FaceContourType.face];
       final staticContour = staticFace!.contours[FaceContourType.face];
 
-      // We use the Nose Base as the "Anchor" so the face doesn't float
+      // 2. Get Nose Anchor (The Pin)
       final liveNose = liveFace.landmarks[FaceLandmarkType.noseBase];
       final staticNose = staticFace!.landmarks[FaceLandmarkType.noseBase];
 
@@ -60,56 +62,50 @@ class FacePainter extends CustomPainter {
       final livePoints = liveContour.points;
       final staticPoints = staticContour.points;
 
-      // 2. Prepare Data Lists
-      List<Offset> positions = [];     // Screen coordinates (Live)
-      List<Offset> textureCoords = []; // Texture coordinates (Static)
-      List<int> indices = [];          // Triangle connections
+      // Match point counts
+      int pointCount = math.min(livePoints.length, staticPoints.length);
 
-      // 3. Add the ANCHOR Point (The Nose) at Index 0
-      // This pins the texture to your nose, preventing sliding
+      List<Offset> positions = [];
+      List<Offset> textureCoords = [];
+      List<int> indices = [];
+
+      // 3. Build Mesh
+      // Center Point = NOSE (Stable)
       positions.add(Offset(
-        liveNose.position.x.toDouble() * scaleX,
-        liveNose.position.y.toDouble() * scaleY,
+          liveNose.position.x.toDouble() * scaleX,
+          liveNose.position.y.toDouble() * scaleY
       ));
-
       textureCoords.add(Offset(
-        staticNose.position.x.toDouble(),
-        staticNose.position.y.toDouble(),
+          staticNose.position.x.toDouble(),
+          staticNose.position.y.toDouble()
       ));
 
-      // 4. Add the Face Contour Points
-      // We use the smaller count to avoid crashes if one face is detected differently
-      final int pointCount = math.min(livePoints.length, staticPoints.length);
-
+      // Edge Points = FACE OUTLINE
       for (int i = 0; i < pointCount; i++) {
-        // Live Point (Scaled to screen)
         positions.add(Offset(
           livePoints[i].x.toDouble() * scaleX,
           livePoints[i].y.toDouble() * scaleY,
         ));
 
-        // Static Point (Raw pixels)
         textureCoords.add(Offset(
           staticPoints[i].x.toDouble(),
           staticPoints[i].y.toDouble(),
         ));
       }
 
-      // 5. Build the Mesh (Triangle Fan)
-      // Connect: Nose(0) -> ContourPoint(i) -> ContourPoint(i+1)
-      // This stretches the skin from your nose to the edge of your face
+      // 4. Connect Triangles (Nose -> Edge -> Next Edge)
+      // This creates a clean "Fan" shape that never crosses over itself.
       for (int i = 1; i < pointCount; i++) {
-        indices.add(0);     // Nose Anchor
-        indices.add(i);     // Current Edge Point
-        indices.add(i + 1); // Next Edge Point
+        indices.add(0);
+        indices.add(i);
+        indices.add(i + 1);
       }
-
-      // Close the loop (Connect last point back to first point)
+      // Close the loop
       indices.add(0);
       indices.add(pointCount);
       indices.add(1);
 
-      // 6. Draw
+      // 5. Draw
       final vertices = ui.Vertices(
         ui.VertexMode.triangles,
         positions,
@@ -123,7 +119,8 @@ class FacePainter extends CustomPainter {
           ui.TileMode.clamp,
           ui.TileMode.clamp,
           Matrix4.identity().storage,
-        );
+        )
+        ..color = Colors.white.withOpacity(morphOpacity); // Apply slider opacity
 
       canvas.drawVertices(vertices, BlendMode.srcOver, meshPaint);
     }
@@ -131,6 +128,8 @@ class FacePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(FacePainter oldDelegate) {
-    return oldDelegate.faces != faces || oldDelegate.faceTexture != faceTexture;
+    return oldDelegate.faces != faces ||
+        oldDelegate.faceTexture != faceTexture ||
+        oldDelegate.morphOpacity != morphOpacity;
   }
 }
