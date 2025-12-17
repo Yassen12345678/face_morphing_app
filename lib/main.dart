@@ -1,23 +1,126 @@
-import 'dart:typed_data';
 import 'dart:io';
 import 'dart:ui' as ui;
-import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
-import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:face_task_5/face_painter.dart';
+import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
-import 'animal_data.dart'; // Ensure this file exists as created previously
+import 'animal_data.dart';
+import 'gender_predictor.dart';
 
 List<CameraDescription> cameras = [];
+
+/// Converts a [CameraImage] to a [img.Image] format.
+img.Image? convertCameraImage(CameraImage cameraImage) {
+  try {
+    // iOS BGRA
+    if (cameraImage.format.group == ImageFormatGroup.bgra8888) {
+      return img.Image.fromBytes(
+        width: cameraImage.width,
+        height: cameraImage.height,
+        bytes: cameraImage.planes[0].bytes.buffer,
+        order: img.ChannelOrder.bgra,
+      );
+    } 
+    
+    // Android NV21 / YUV420
+    if (cameraImage.format.group == ImageFormatGroup.nv21 || cameraImage.format.group == ImageFormatGroup.yuv420) {
+      return _convertYUVtoRGB(cameraImage);
+    }
+    
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+img.Image? _convertYUVtoRGB(CameraImage cameraImage) {
+    final int width = cameraImage.width;
+    final int height = cameraImage.height;
+    final int planes = cameraImage.planes.length;
+    
+    final image = img.Image(width: width, height: height);
+
+    if (planes >= 2) {
+      final yBuffer = cameraImage.planes[0].bytes;
+      Uint8List? uvBuffer;
+      int uvRowStride = 0;
+      int uvPixelStride = 1;
+      
+      if (planes == 2) {
+         uvBuffer = cameraImage.planes[1].bytes;
+         uvRowStride = cameraImage.planes[1].bytesPerRow;
+         uvPixelStride = cameraImage.planes[1].bytesPerPixel ?? 2;
+      } else if (planes >= 3) {
+         // Fallback to Grayscale for 3-plane (safe)
+         return _convertGrayscale(cameraImage);
+      }
+
+      for (var y = 0; y < height; ++y) {
+        for (var x = 0; x < width; ++x) {
+          final yIndex = y * width + x;
+          final yValue = yBuffer[yIndex];
+
+          final uvx = (x / 2).floor();
+          final uvy = (y / 2).floor();
+          
+          int uValue = 128;
+          int vValue = 128;
+          
+          if (uvBuffer != null) {
+              final uvIndex = uvy * uvRowStride + uvx * uvPixelStride;
+              if (uvIndex < uvBuffer.length - 1) {
+                  vValue = uvBuffer[uvIndex];
+                  uValue = uvBuffer[uvIndex + 1];
+              }
+          }
+
+          final yDouble = yValue.toDouble();
+          final uDouble = uValue - 128.0;
+          final vDouble = vValue - 128.0;
+
+          final r = (yDouble + 1.402 * vDouble).round().clamp(0, 255);
+          final g = (yDouble - 0.344136 * uDouble - 0.714136 * vDouble).round().clamp(0, 255);
+          final b = (yDouble + 1.772 * uDouble).round().clamp(0, 255);
+
+          image.setPixelRgb(x, y, r, g, b);
+        }
+      }
+      return image;
+    } 
+    else if (planes == 1) {
+       return _convertGrayscale(cameraImage);
+    }
+    
+    return null;
+}
+
+img.Image _convertGrayscale(CameraImage cameraImage) {
+    final int width = cameraImage.width;
+    final int height = cameraImage.height;
+    final yBuffer = cameraImage.planes[0].bytes;
+    
+    final image = img.Image(width: width, height: height);
+    
+    for (var y = 0; y < height; ++y) {
+      for (var x = 0; x < width; ++x) {
+         int val = yBuffer[y * width + x];
+         image.setPixelRgb(x, y, val, val, val);
+      }
+    }
+    return image;
+}
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     cameras = await availableCameras();
   } on CameraException catch (e) {
-    print('Error initializing cameras: $e');
+    // print('Error initializing cameras: $e');
   }
   runApp(const FaceMorphApp());
 }
@@ -58,6 +161,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     ),
   );
 
+  // --- GENDER DETECTION VARIABLES ---
+  final GenderPredictor _genderPredictor = GenderPredictor();
+  String _detectedGender = "Unknown";
+  bool _isPredictingGender = false;
+  bool _triggerGenderCheck = false;
+  // ---------------------------------
+
   List<Face> _faces = [];
   bool _isDetecting = false;
 
@@ -65,7 +175,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   File? _staticImageFile;
   List<Face> _staticImageFaces = [];
   ui.Image? _staticImageTexture;
-  AnimalData? _selectedAnimal; // Added: Track selected animal
+  AnimalData? _selectedAnimal;
   double _morphValue = 0.5;
   // ----------------------
 
@@ -123,7 +233,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         setState(() => _isCameraInitialized = true);
       }
     } catch (e) {
-      print("Camera init error: $e");
+      // print("Camera init error: $e");
     }
   }
 
@@ -137,7 +247,6 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     await _initializeCamera(initialCamera: newCamera);
   }
 
-  // Helper to load animal assets
   Future<void> _loadAnimalAsset(AnimalData animal) async {
     final ByteData data = await rootBundle.load(animal.assetPath);
     final Uint8List bytes = data.buffer.asUint8List();
@@ -146,8 +255,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     setState(() {
       _selectedAnimal = animal;
       _staticImageTexture = image;
-      _staticImageFaces = []; // Clear human faces
-      _staticImageFile = null; // Clear picked file
+      _staticImageFaces = [];
+      _staticImageFile = null;
     });
   }
 
@@ -165,7 +274,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     if (image != null) {
       setState(() {
         _staticImageFile = File(image.path);
-        _selectedAnimal = null; // Clear animal selection
+        _selectedAnimal = null;
         _staticImageFaces = [];
         _staticImageTexture = null;
       });
@@ -188,7 +297,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         }
       }
     } catch (e) {
-      print("Error processing static image: $e");
+      // print("Error processing static image: $e");
     }
   }
 
@@ -217,12 +326,78 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
           bytesPerRow: cameraImage.planes.first.bytesPerRow,
         ),
       );
+
       final faces = await _faceDetector.processImage(inputImage);
+
+      // --- NEW GENDER LOGIC (MANUAL TRIGGER) ---
+      if (faces.isNotEmpty && _triggerGenderCheck) {
+        _triggerGenderCheck = false; // Turn off trigger immediately
+        if (!_isPredictingGender) {
+          _runGenderPrediction(cameraImage, faces.first);
+        }
+      }
+      // ----------------------------------------
+
       if (mounted) setState(() => _faces = faces);
     } catch (e) {
-      print("Error: $e");
+      // print("Error: $e");
     } finally {
       _isDetecting = false;
+    }
+  }
+
+  // Helper method to run gender prediction in background
+  void _runGenderPrediction(CameraImage cameraImage, Face face) async {
+    setState(() {
+      _isPredictingGender = true;
+      _detectedGender = "Analyzing...";
+    });
+
+    try {
+      if (cameraImage.planes.isEmpty) {
+        if (mounted) setState(() => _detectedGender = "Err: No Planes");
+        return;
+      }
+
+      final convertedImage = await compute(convertCameraImage, cameraImage);
+
+      if (convertedImage != null) {
+        
+        // --- ROTATION FIX ---
+        img.Image processedImage = convertedImage;
+        // Rotate image if sensor orientation requires it (usually 90 or 270 on Android)
+        // This aligns the image with the face coordinates from ML Kit
+        if (_cameraDescription.sensorOrientation != 0) {
+           processedImage = img.copyRotate(convertedImage, angle: _cameraDescription.sensorOrientation);
+        }
+
+        int x = face.boundingBox.left.toInt();
+        int y = face.boundingBox.top.toInt();
+        int w = face.boundingBox.width.toInt();
+        int h = face.boundingBox.height.toInt();
+
+        // Safety Clamp
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (x + w > processedImage.width) w = processedImage.width - x;
+        if (y + h > processedImage.height) h = processedImage.height - y;
+
+        if (w > 0 && h > 0) {
+          final faceImage = img.copyCrop(processedImage, x: x, y: y, width: w, height: h);
+          String result = _genderPredictor.predict(faceImage);
+          if (mounted) setState(() => _detectedGender = result);
+        } else {
+          if (mounted) setState(() => _detectedGender = "Bounds Error: ${processedImage.width}x${processedImage.height} vs $x,$y ${w}x$h");
+        }
+      } else {
+        String fmt = cameraImage.format.group.toString().split('.').last;
+        int planes = cameraImage.planes.length;
+        if (mounted) setState(() => _detectedGender = "Fmt:$fmt P:$planes Fail");
+      }
+    } catch (e) {
+      if (mounted) setState(() => _detectedGender = "AppErr: $e");
+    } finally {
+      if (mounted) setState(() => _isPredictingGender = false);
     }
   }
 
@@ -232,7 +407,11 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    final cameraAspectRatio = _controller!.value.aspectRatio;
+    double aspectRatio = _controller!.value.aspectRatio;
+    if (MediaQuery.of(context).orientation == Orientation.portrait) {
+      aspectRatio = 1 / aspectRatio;
+    }
+
     Size imageSize = const Size(0,0);
     if (_controller!.value.previewSize != null) {
       imageSize = Size(
@@ -256,87 +435,131 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       body: Column(
         children: [
           Expanded(
-            child: ClipRect( // Clips the "zoomed in" overflow
-              child: Transform.scale(
-                // CALCULATE SCALE: Zoom to fill screen (Cover Mode)
-                scale: _controller != null && _controller!.value.isInitialized
-                    ? 1 / (_controller!.value.aspectRatio * MediaQuery.of(context).size.aspectRatio)
-                    : 1.0,
-                alignment: Alignment.center,
-                child: Center(
-                  child: AspectRatio(
-                    aspectRatio: _controller!.value.aspectRatio,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: <Widget>[
-                        CameraPreview(_controller!),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: aspectRatio,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: <Widget>[
+                    CameraPreview(_controller!),
 
-                        // Face Mesh / Morph Layer
-                        if (imageSize.width != 0)
-                          isFrontCamera
-                              ? Transform.scale(
-                            scaleX: -1,
-                            scaleY: 1,
-                            alignment: Alignment.center,
-                            child: CustomPaint(
-                              painter: FacePainter(
-                                faces: _faces,
-                                absoluteImageSize: imageSize,
-                                faceTexture: _staticImageTexture,
-                                staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
-                                manualAnimal: _selectedAnimal,
-                                morphOpacity: _morphValue,
-                              ),
-                            ),
-                          )
-                              : CustomPaint(
-                            painter: FacePainter(
-                              faces: _faces,
-                              absoluteImageSize: imageSize,
-                              faceTexture: _staticImageTexture,
-                              staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
-                              manualAnimal: _selectedAnimal,
-                              morphOpacity: _morphValue,
-                            ),
+                    if (imageSize.width != 0)
+                      isFrontCamera
+                          ? Transform.scale(
+                        scaleX: -1,
+                        scaleY: 1,
+                        alignment: Alignment.center,
+                        child: CustomPaint(
+                          painter: FacePainter(
+                            faces: _faces,
+                            absoluteImageSize: imageSize,
+                            faceTexture: _staticImageTexture,
+                            staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
+                            manualAnimal: _selectedAnimal,
+                            morphOpacity: _morphValue,
                           ),
+                        ),
+                      )
+                          : CustomPaint(
+                        painter: FacePainter(
+                          faces: _faces,
+                          absoluteImageSize: imageSize,
+                          faceTexture: _staticImageTexture,
+                          staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
+                          manualAnimal: _selectedAnimal,
+                          morphOpacity: _morphValue,
+                        ),
+                      ),
 
-                        // Small Preview (Target Face)
-                        if (_staticImageFile != null)
-                          Positioned(
-                            top: 10,
-                            right: 10,
-                            child: Container(
-                              width: 80,
-                              height: 100,
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.white, width: 2),
-                                image: DecorationImage(
-                                  image: FileImage(_staticImageFile!),
-                                  fit: BoxFit.cover,
+                    // --- GENDER TEXT OVERLAY ---
+                    Positioned(
+                      top: 20,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 20),
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: ConstrainedBox(
+                             constraints: const BoxConstraints(maxHeight: 200),
+                             child: SingleChildScrollView(
+                                scrollDirection: Axis.vertical,
+                                child: Text(
+                                  "GENDER: $_detectedGender",
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: _detectedGender.length > 25 ? 14 : 24,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
-                              ),
+                             ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // ---------------------------
+
+                    if (_staticImageFile != null)
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: Container(
+                          width: 80,
+                          height: 100,
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.white, width: 2),
+                            image: DecorationImage(
+                              image: FileImage(_staticImageFile!),
+                              fit: BoxFit.cover,
                             ),
                           ),
-                      ],
-                    ),
-                  ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
           ),
 
-          // --- CONTROLS SECTION (Bottom) ---
           Container(
             color: Colors.white,
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 30),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Animal Selector
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isPredictingGender
+                        ? null
+                        : () {
+                      setState(() {
+                        _triggerGenderCheck = true;
+                      });
+                    },
+                    icon: _isPredictingGender
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Icon(Icons.face),
+                    label: Text(_isPredictingGender ? "ANALYZING..." : "DETECT GENDER"),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.deepPurple,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 15),
+
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(
-                    children: animalAssets.map((animal) { // Make sure animalAssets is defined in your file
+                    children: animalAssets.map((animal) {
                       return GestureDetector(
                         onTap: () => _loadAnimalAsset(animal),
                         child: Container(
@@ -350,10 +573,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                             shape: BoxShape.circle,
                           ),
                           child: CircleAvatar(
-                            // If this is empty, check pubspec.yaml and RESTART app
                             backgroundImage: AssetImage(animal.assetPath),
                             radius: 25,
-                            backgroundColor: Colors.grey[300], // Fallback color if image fails
+                            backgroundColor: Colors.grey[300],
                           ),
                         ),
                       );
@@ -383,6 +605,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
             ),
           ),
         ],
-      ),    );
+      ),
+    );
   }
 }
