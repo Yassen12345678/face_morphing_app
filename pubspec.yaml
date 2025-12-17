@@ -22,6 +22,12 @@ dependencies:
   image: ^4.1.7
   # 5. TFLite: For running our gender model
   tflite_flutter: ^0.11.0
+  # 6. Screen Recorder: To record the widget stack
+  screen_recorder: ^0.3.0
+  # 7. Path Provider: To find a place to write the file temporarily
+  path_provider: ^2.1.2
+  # 8. Gal: To move that file into your Phone's Gallery
+  gal: ^2.3.0
 
 dev_dependencies:
   flutter_test:

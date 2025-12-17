@@ -8,6 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:screen_recorder/screen_recorder.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:gal/gal.dart';
 import 'animal_data.dart';
 import 'gender_predictor.dart';
 
@@ -120,7 +123,7 @@ Future<void> main() async {
   try {
     cameras = await availableCameras();
   } on CameraException catch (e) {
-    // print('Error initializing cameras: $e');
+    debugPrint('Error initializing cameras: $e');
   }
   runApp(const FaceMorphApp());
 }
@@ -160,6 +163,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       performanceMode: FaceDetectorMode.accurate,
     ),
   );
+  
+  // --- SCREEN RECORDER ---
+  final ScreenRecorderController _screenRecorderController = ScreenRecorderController();
+  // -----------------------
 
   // --- GENDER DETECTION VARIABLES ---
   final GenderPredictor _genderPredictor = GenderPredictor();
@@ -170,6 +177,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
   List<Face> _faces = [];
   bool _isDetecting = false;
+  
+  // --- RECORDING VARIABLES ---
+  bool _isRecording = false;
+  // ---------------------------
 
   // --- MORPH VARIABLES ---
   File? _staticImageFile;
@@ -233,7 +244,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         setState(() => _isCameraInitialized = true);
       }
     } catch (e) {
-      // print("Camera init error: $e");
+      debugPrint("Camera init error: $e");
     }
   }
 
@@ -297,7 +308,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
         }
       }
     } catch (e) {
-      // print("Error processing static image: $e");
+      debugPrint("Error processing static image: $e");
     }
   }
 
@@ -340,7 +351,7 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
       if (mounted) setState(() => _faces = faces);
     } catch (e) {
-      // print("Error: $e");
+      debugPrint("Error: $e");
     } finally {
       _isDetecting = false;
     }
@@ -400,6 +411,121 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       if (mounted) setState(() => _isPredictingGender = false);
     }
   }
+  
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      // --- STOPPING RECORDING ---
+      setState(() => _isRecording = false);
+      
+      try {
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+             const SnackBar(content: Text('Processing video... please wait.')),
+           );
+        }
+
+        // 1. Stop the recorder
+        _screenRecorderController.stop();
+        
+        // 2. EXPORT the data
+        debugPrint("Starting export...");
+        final result = await _screenRecorderController.exporter.exportGif();
+        debugPrint("Export finished. Bytes: ${result?.length}");
+        
+        if (result == null) {
+          throw Exception("Recording failed: No data generated");
+        }
+
+        // 3. Create a temporary file path
+        final directory = await getApplicationDocumentsDirectory();
+        // Naming the file based on current time so they don't overwrite each other
+        final String fileName = 'morph_video_${DateTime.now().millisecondsSinceEpoch}.gif';
+        final File file = File('${directory.path}/$fileName');
+
+        // 4. Write the bytes to the file
+        // result is usually a list of bytes (Uint8List)
+        await file.writeAsBytes(result as List<int>);
+        debugPrint("File written to: ${file.path}");
+
+        // 5. Save to Gallery using the 'gal' package
+        // Request access first just in case
+        debugPrint("Requesting gallery access...");
+        await Gal.requestAccess();
+        debugPrint("Saving to gallery...");
+        await Gal.putImage(file.path);
+        debugPrint("Saved to gallery!");
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Saved to Gallery: $fileName')),
+          );
+        }
+      } catch (e) {
+        debugPrint("Error saving video: $e");
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error saving: $e')),
+          );
+        }
+      }
+    } else {
+      // --- STARTING RECORDING ---
+      try {
+        setState(() => _isRecording = true);
+        _screenRecorderController.start();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error starting: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  void _showAnimalList() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          height: 150,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            itemCount: animalAssets.length,
+            itemBuilder: (context, index) {
+              final animal = animalAssets[index];
+              return GestureDetector(
+                onTap: () {
+                  _loadAnimalAsset(animal);
+                  Navigator.pop(context);
+                },
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 10),
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: _selectedAnimal == animal ? Colors.deepPurple : Colors.transparent,
+                      width: 3,
+                    ),
+                  ),
+                  child: CircleAvatar(
+                    backgroundImage: AssetImage(animal.assetPath),
+                    radius: 30,
+                    backgroundColor: Colors.grey[300],
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -435,21 +561,37 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       body: Column(
         children: [
           Expanded(
-            child: Center(
-              child: AspectRatio(
-                aspectRatio: aspectRatio,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: <Widget>[
-                    CameraPreview(_controller!),
-
-                    if (imageSize.width != 0)
-                      isFrontCamera
-                          ? Transform.scale(
-                        scaleX: -1,
-                        scaleY: 1,
-                        alignment: Alignment.center,
-                        child: CustomPaint(
+            child: ScreenRecorder(
+              height: 500, // Reasonable default, expands to fill available
+              width: 500,
+              controller: _screenRecorderController,
+              background: Colors.black,
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: aspectRatio,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      CameraPreview(_controller!),
+  
+                      if (imageSize.width != 0)
+                        isFrontCamera
+                            ? Transform.scale(
+                          scaleX: -1,
+                          scaleY: 1,
+                          alignment: Alignment.center,
+                          child: CustomPaint(
+                            painter: FacePainter(
+                              faces: _faces,
+                              absoluteImageSize: imageSize,
+                              faceTexture: _staticImageTexture,
+                              staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
+                              manualAnimal: _selectedAnimal,
+                              morphOpacity: _morphValue,
+                            ),
+                          ),
+                        )
+                            : CustomPaint(
                           painter: FacePainter(
                             faces: _faces,
                             absoluteImageSize: imageSize,
@@ -459,130 +601,104 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                             morphOpacity: _morphValue,
                           ),
                         ),
-                      )
-                          : CustomPaint(
-                        painter: FacePainter(
-                          faces: _faces,
-                          absoluteImageSize: imageSize,
-                          faceTexture: _staticImageTexture,
-                          staticFace: _staticImageFaces.isNotEmpty ? _staticImageFaces[0] : null,
-                          manualAnimal: _selectedAnimal,
-                          morphOpacity: _morphValue,
-                        ),
-                      ),
-
-                    // --- GENDER TEXT OVERLAY ---
-                    Positioned(
-                      top: 20,
-                      left: 0,
-                      right: 0,
-                      child: Center(
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 20),
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: Colors.white, width: 2),
-                          ),
-                          child: ConstrainedBox(
-                             constraints: const BoxConstraints(maxHeight: 200),
-                             child: SingleChildScrollView(
-                                scrollDirection: Axis.vertical,
-                                child: Text(
-                                  "GENDER: $_detectedGender",
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: _detectedGender.length > 25 ? 14 : 24,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                             ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    // ---------------------------
-
-                    if (_staticImageFile != null)
+  
+                      // --- GENDER TEXT OVERLAY ---
                       Positioned(
-                        top: 10,
-                        right: 10,
-                        child: Container(
-                          width: 80,
-                          height: 100,
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.white, width: 2),
-                            image: DecorationImage(
-                              image: FileImage(_staticImageFile!),
-                              fit: BoxFit.cover,
+                        top: 20,
+                        left: 0,
+                        right: 0,
+                        child: Center(
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 20),
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: Colors.white, width: 2),
+                            ),
+                            child: Text(
+                              "GENDER: $_detectedGender",
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
                             ),
                           ),
                         ),
                       ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
 
+          // --- BOTTOM CONTROLS ---
           Container(
-            color: Colors.white,
-            padding: const EdgeInsets.fromLTRB(20, 10, 20, 30),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: _isPredictingGender
-                        ? null
-                        : () {
-                      setState(() {
-                        _triggerGenderCheck = true;
-                      });
-                    },
-                    icon: _isPredictingGender
-                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                        : const Icon(Icons.face),
-                    label: Text(_isPredictingGender ? "ANALYZING..." : "DETECT GENDER"),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.deepPurple,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                // BUTTON ROW
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween, // Pushes buttons to extreme ends
+                  children: [
+                    // GENDER BUTTON (Left)
+                    SizedBox(
+                      width: 70, // Fixed Width
+                      height: 70, // Fixed Height (Equal Diameter)
+                      child: FloatingActionButton(
+                        heroTag: "gender_btn",
+                        backgroundColor: Colors.deepPurple,
+                        onPressed: () {
+                          if (!_isPredictingGender) {
+                            setState(() {
+                              _triggerGenderCheck = true;
+                              _detectedGender = "Scanning...";
+                            });
+                          }
+                        },
+                        child: _isPredictingGender
+                            ? const CircularProgressIndicator(color: Colors.white)
+                            : const Icon(Icons.face, size: 35, color: Colors.white),
+                      ),
                     ),
-                  ),
-                ),
-                const SizedBox(height: 15),
-
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: animalAssets.map((animal) {
-                      return GestureDetector(
-                        onTap: () => _loadAnimalAsset(animal),
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 5),
-                          padding: const EdgeInsets.all(2),
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                                color: _selectedAnimal == animal ? Colors.deepPurple : Colors.transparent,
-                                width: 3
-                            ),
-                            shape: BoxShape.circle,
-                          ),
-                          child: CircleAvatar(
-                            backgroundImage: AssetImage(animal.assetPath),
-                            radius: 25,
-                            backgroundColor: Colors.grey[300],
-                          ),
+                    
+                    // RECORD BUTTON (Center)
+                    SizedBox(
+                      width: 70,
+                      height: 70,
+                      child: FloatingActionButton(
+                        heroTag: "record_btn",
+                        backgroundColor: _isRecording ? Colors.red : Colors.white,
+                        onPressed: _toggleRecording,
+                        child: Icon(
+                          _isRecording ? Icons.stop : Icons.videocam,
+                          size: 35,
+                          color: _isRecording ? Colors.white : Colors.red,
                         ),
-                      );
-                    }).toList(),
-                  ),
+                      ),
+                    ),
+
+                    // ANIMAL BUTTON (Right)
+                    SizedBox(
+                      width: 70, // Fixed Width
+                      height: 70, // Fixed Height (Equal Diameter)
+                      child: FloatingActionButton(
+                        heroTag: "animal_btn",
+                        backgroundColor: Colors.deepPurple,
+                        onPressed: _showAnimalList,
+                        child: const Icon(Icons.pets, size: 30, color: Colors.white), // Modern Icon
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 10),
+
+                const SizedBox(height: 20),
+
+                // SLIDER ROW
                 Row(
                   children: [
                     const Text("Alpha: 0%", style: TextStyle(fontWeight: FontWeight.bold)),
@@ -591,9 +707,9 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                         value: _morphValue,
                         min: 0.0,
                         max: 1.0,
-                        onChanged: (value) {
+                        onChanged: (val) {
                           setState(() {
-                            _morphValue = value;
+                            _morphValue = val;
                           });
                         },
                       ),
