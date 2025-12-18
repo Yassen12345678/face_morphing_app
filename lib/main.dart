@@ -172,7 +172,8 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   final GenderPredictor _genderPredictor = GenderPredictor();
   String _detectedGender = "Unknown";
   bool _isPredictingGender = false;
-  bool _triggerGenderCheck = false;
+  DateTime _lastGenderPredictionTime = DateTime.fromMillisecondsSinceEpoch(0);
+  final Duration _genderPredictionInterval = const Duration(milliseconds: 1000); // 1 Second Interval
   // ---------------------------------
 
   List<Face> _faces = [];
@@ -189,6 +190,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   AnimalData? _selectedAnimal;
   double _morphValue = 0.5;
   // ----------------------
+  
+  // --- ADD-ON VARIABLES ---
+  // If you want a separate list for add-ons (like hats, glasses, etc.)
+  // You can define them here or in a separate file like animal_data.dart
+  // For now, I'll assume we select them similarly but maybe apply them differently
+  // or just use the same morph logic if they are face masks.
+  // ------------------------
 
   @override
   void initState() {
@@ -263,10 +271,38 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
     final Uint8List bytes = data.buffer.asUint8List();
     final image = await decodeImageFromList(bytes);
 
+    List<Face> detectedFaces = [];
+    
+    // Heuristic: If it contains "face" in the filename, assume it's a human face
+    // and try to detect landmarks using ML Kit.
+    if (animal.assetPath.toLowerCase().contains("face")) {
+      try {
+        final tempDir = await getTemporaryDirectory();
+        final tempFile = File('${tempDir.path}/${DateTime.now().millisecondsSinceEpoch}.png');
+        await tempFile.writeAsBytes(bytes);
+        
+        final inputImage = InputImage.fromFilePath(tempFile.path);
+        detectedFaces = await _faceDetector.processImage(inputImage);
+        
+        // Cleanup
+        await tempFile.delete();
+      } catch (e) {
+        debugPrint("Error detecting face in asset: $e");
+      }
+    }
+
     setState(() {
-      _selectedAnimal = animal;
+      if (detectedFaces.isNotEmpty) {
+        // It's a human face with landmarks!
+        // We set _selectedAnimal to null so FacePainter uses the landmark morphing logic
+        _selectedAnimal = null;
+        _staticImageFaces = detectedFaces;
+      } else {
+        // It's an animal or detection failed -> Use manual alignment logic
+        _selectedAnimal = animal;
+        _staticImageFaces = [];
+      }
       _staticImageTexture = image;
-      _staticImageFaces = [];
       _staticImageFile = null;
     });
   }
@@ -340,10 +376,13 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
 
       final faces = await _faceDetector.processImage(inputImage);
 
-      // --- NEW GENDER LOGIC (MANUAL TRIGGER) ---
-      if (faces.isNotEmpty && _triggerGenderCheck) {
-        _triggerGenderCheck = false; // Turn off trigger immediately
-        if (!_isPredictingGender) {
+      // --- AUTOMATIC GENDER LOGIC ---
+      if (faces.isNotEmpty) {
+        final now = DateTime.now();
+        // Check if enough time has passed since last prediction (e.g. 1 second)
+        // AND ensure we are not already running a prediction
+        if (!_isPredictingGender && now.difference(_lastGenderPredictionTime) > _genderPredictionInterval) {
+          _lastGenderPredictionTime = now;
           _runGenderPrediction(cameraImage, faces.first);
         }
       }
@@ -361,12 +400,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   void _runGenderPrediction(CameraImage cameraImage, Face face) async {
     setState(() {
       _isPredictingGender = true;
-      _detectedGender = "Analyzing...";
+      // Note: We don't set "Analyzing..." here to avoid flickering the text constantly.
+      // We just keep the old result until the new one is ready.
     });
 
     try {
       if (cameraImage.planes.isEmpty) {
-        if (mounted) setState(() => _detectedGender = "Err: No Planes");
         return;
       }
 
@@ -397,16 +436,10 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
           final faceImage = img.copyCrop(processedImage, x: x, y: y, width: w, height: h);
           String result = _genderPredictor.predict(faceImage);
           if (mounted) setState(() => _detectedGender = result);
-        } else {
-          if (mounted) setState(() => _detectedGender = "Bounds Error: ${processedImage.width}x${processedImage.height} vs $x,$y ${w}x$h");
         }
-      } else {
-        String fmt = cameraImage.format.group.toString().split('.').last;
-        int planes = cameraImage.planes.length;
-        if (mounted) setState(() => _detectedGender = "Fmt:$fmt P:$planes Fail");
-      }
+      } 
     } catch (e) {
-      if (mounted) setState(() => _detectedGender = "AppErr: $e");
+      // debugPrint("Gender pred error: $e");
     } finally {
       if (mounted) setState(() => _isPredictingGender = false);
     }
@@ -484,6 +517,22 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
   }
 
   void _showAnimalList() {
+    // 1. Determine Current Gender
+    String currentGender = 'unknown';
+    if (_detectedGender.toLowerCase().contains('male') && !_detectedGender.toLowerCase().contains('female')) {
+      currentGender = 'male';
+    } else if (_detectedGender.toLowerCase().contains('female')) {
+      currentGender = 'female';
+    }
+
+    // 2. Filter Assets
+    // Show items where gender matches OR gender is 'both'
+    // If gender is unknown, we can either show ALL or show 'both'. Let's show ALL to be safe.
+    final filteredList = animalAssets.where((animal) {
+       if (currentGender == 'unknown') return true; 
+       return animal.gender == 'both' || animal.gender == currentGender;
+    }).toList();
+
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -491,36 +540,124 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
       ),
       builder: (context) {
         return Container(
-          padding: const EdgeInsets.symmetric(vertical: 20),
-          height: 150,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            itemCount: animalAssets.length,
-            itemBuilder: (context, index) {
-              final animal = animalAssets[index];
-              return GestureDetector(
-                onTap: () {
-                  _loadAnimalAsset(animal);
-                  Navigator.pop(context);
-                },
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 10),
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: _selectedAnimal == animal ? Colors.deepPurple : Colors.transparent,
-                      width: 3,
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
+          height: 350, 
+          child: Column(
+            children: [
+               Text("Showing ${currentGender == 'unknown' ? 'All' : currentGender.toUpperCase()} Options", 
+                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+               ),
+               const SizedBox(height: 10),
+               Expanded(
+                 child: filteredList.isEmpty 
+                  ? const Center(child: Text("No images found for this gender."))
+                  : GridView.builder(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 4, 
+                      crossAxisSpacing: 15,
+                      mainAxisSpacing: 15,
                     ),
+                    itemCount: filteredList.length,
+                    itemBuilder: (context, index) {
+                      final animal = filteredList[index];
+                      return GestureDetector(
+                        onTap: () {
+                          _loadAnimalAsset(animal);
+                          Navigator.pop(context);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: _selectedAnimal == animal ? Colors.deepPurple : Colors.transparent,
+                              width: 3,
+                            ),
+                          ),
+                          child: CircleAvatar(
+                            backgroundImage: AssetImage(animal.assetPath),
+                            backgroundColor: Colors.grey[300],
+                          ),
+                        ),
+                      );
+                    },
                   ),
-                  child: CircleAvatar(
-                    backgroundImage: AssetImage(animal.assetPath),
-                    radius: 30,
-                    backgroundColor: Colors.grey[300],
+               ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+  
+  void _showAddOnList() {
+    // 1. Determine Current Gender
+    String currentGender = 'unknown';
+    if (_detectedGender.toLowerCase().contains('male') && !_detectedGender.toLowerCase().contains('female')) {
+      currentGender = 'male';
+    } else if (_detectedGender.toLowerCase().contains('female')) {
+      currentGender = 'female';
+    }
+
+    // 2. Filter Assets
+    final filteredList = addOnAssets.where((addon) {
+       if (currentGender == 'unknown') return true; 
+       return addon.gender == 'both' || addon.gender == currentGender;
+    }).toList();
+
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 20),
+          height: 350,
+          child: Column(
+             children: [
+               Text("Add-ons (${currentGender == 'unknown' ? 'All' : currentGender.toUpperCase()})", 
+                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+               ),
+               const SizedBox(height: 10),
+               Expanded(
+                 child: filteredList.isEmpty 
+                 ? const Center(child: Text("No add-ons available yet."))
+                 : GridView.builder(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 4, 
+                      crossAxisSpacing: 15,
+                      mainAxisSpacing: 15,
+                    ),
+                    itemCount: filteredList.length,
+                    itemBuilder: (context, index) {
+                      final addon = filteredList[index];
+                      return GestureDetector(
+                        onTap: () {
+                           // For now, load it like an animal (same morph logic)
+                           // or you can add specific logic for add-ons here.
+                          _loadAnimalAsset(addon);
+                          Navigator.pop(context);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: _selectedAnimal == addon ? Colors.deepPurple : Colors.transparent,
+                              width: 3,
+                            ),
+                          ),
+                          child: CircleAvatar(
+                            backgroundImage: AssetImage(addon.assetPath),
+                            backgroundColor: Colors.grey[300],
+                          ),
+                        ),
+                      );
+                    },
                   ),
-                ),
-              );
-            },
+               ),
+             ],
           ),
         );
       },
@@ -643,29 +780,20 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
               children: [
                 // BUTTON ROW
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween, // Pushes buttons to extreme ends
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween, // Distribute evenly
                   children: [
-                    // GENDER BUTTON (Left)
+                    // ADD-ON BUTTON (Left)
                     SizedBox(
                       width: 70, // Fixed Width
-                      height: 70, // Fixed Height (Equal Diameter)
+                      height: 70, // Fixed Height
                       child: FloatingActionButton(
-                        heroTag: "gender_btn",
+                        heroTag: "addon_btn",
                         backgroundColor: Colors.deepPurple,
-                        onPressed: () {
-                          if (!_isPredictingGender) {
-                            setState(() {
-                              _triggerGenderCheck = true;
-                              _detectedGender = "Scanning...";
-                            });
-                          }
-                        },
-                        child: _isPredictingGender
-                            ? const CircularProgressIndicator(color: Colors.white)
-                            : const Icon(Icons.face, size: 35, color: Colors.white),
+                        onPressed: _showAddOnList,
+                        child: const Icon(Icons.face_retouching_natural, size: 30, color: Colors.white), 
                       ),
                     ),
-                    
+
                     // RECORD BUTTON (Center)
                     SizedBox(
                       width: 70,
@@ -685,12 +813,12 @@ class _CameraScreenState extends State<CameraScreen> with WidgetsBindingObserver
                     // ANIMAL BUTTON (Right)
                     SizedBox(
                       width: 70, // Fixed Width
-                      height: 70, // Fixed Height (Equal Diameter)
+                      height: 70, // Fixed Height
                       child: FloatingActionButton(
                         heroTag: "animal_btn",
                         backgroundColor: Colors.deepPurple,
                         onPressed: _showAnimalList,
-                        child: const Icon(Icons.pets, size: 30, color: Colors.white), // Modern Icon
+                        child: const Icon(Icons.image, size: 30, color: Colors.white),
                       ),
                     ),
                   ],

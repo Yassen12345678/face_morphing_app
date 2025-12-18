@@ -39,8 +39,6 @@ flutter:
 
   # Ensure these files exist in your "assets/" folder
   assets:
-    - assets/lion.png
-    - assets/koala.png
-    - assets/wolf.png
+    - assets/morph_targets/
     - assets/gender_model.tflite
     - assets/labels.txt

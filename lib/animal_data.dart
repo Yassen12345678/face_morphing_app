@@ -4,11 +4,13 @@ class AnimalData {
   final String assetPath;
   final Offset noseBase;
   final List<Offset> faceContour;
+  final String gender; // 'male', 'female', or 'both'
 
   AnimalData({
     required this.assetPath,
     required this.noseBase,
     required this.faceContour,
+    this.gender = 'both',
   });
 }
 
@@ -46,21 +48,86 @@ List<Offset> _getOvalPoints(double topY, double bottomY, double leftX, double ri
 
 final List<AnimalData> animalAssets = [
   AnimalData(
-    assetPath: 'assets/lion.png',
+    assetPath: 'assets/morph_targets/lion.png',
     noseBase: const Offset(0.5, 0.6),
-    // Expanded boundaries to capture full mane
     faceContour: _getOvalPoints(0.05, 0.95, 0.05, 0.95),
+    gender: 'both',
   ),
   AnimalData(
-    assetPath: 'assets/koala.png',
+    assetPath: 'assets/morph_targets/koala.png',
     noseBase: const Offset(0.5, 0.55),
-    // Koala is wide, use full width
     faceContour: _getOvalPoints(0.0, 0.95, 0.0, 1.0),
+    gender: 'both',
   ),
   AnimalData(
-    assetPath: 'assets/wolf.png',
+    assetPath: 'assets/morph_targets/wolf.png',
     noseBase: const Offset(0.5, 0.65),
-    // Wolf is tall
     faceContour: _getOvalPoints(0.05, 0.95, 0.1, 0.9),
+    gender: 'both',
   ),
+  // New Human Faces - Split arbitrarily for demo (update as needed)
+  // MALE
+  AnimalData(
+    assetPath: 'assets/morph_targets/face1.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'male',
+  ),
+  AnimalData(
+    assetPath: 'assets/morph_targets/face2.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'male',
+  ),
+  AnimalData(
+    assetPath: 'assets/morph_targets/face3.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'male',
+  ),
+  AnimalData(
+    assetPath: 'assets/morph_targets/face4.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'male',
+  ),
+  // FEMALE
+  AnimalData(
+    assetPath: 'assets/morph_targets/face5.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'female',
+  ),
+  AnimalData(
+    assetPath: 'assets/morph_targets/face6.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'female',
+  ),
+  AnimalData(
+    assetPath: 'assets/morph_targets/face7.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'female',
+  ),
+  AnimalData(
+    assetPath: 'assets/morph_targets/face8.png',
+    noseBase: const Offset(0.5, 0.5),
+    faceContour: _getOvalPoints(0.0, 1.0, 0.0, 1.0),
+    gender: 'female',
+  ),
+];
+
+// Placeholder for Add-ons (e.g. Hats, Glasses)
+// Logic will be: if gender is male, show male + both. If female, show female + both.
+final List<AnimalData> addOnAssets = [
+  // Example Male Addon
+  /*
+  AnimalData(
+    assetPath: 'assets/addons/hat_male.png',
+    noseBase: const Offset(0.5, 0.5), 
+    faceContour: [],
+    gender: 'male',
+  ),
+  */
 ];
